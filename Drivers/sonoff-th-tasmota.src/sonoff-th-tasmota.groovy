@@ -10,23 +10,25 @@
  *  on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License
  *  for the specific language governing permissions and limitations under the License.
  *
- *  Sonoff S20 - Tasmota
+ *  Sonoff TH - Tasmota
  *
  *  Author: Eric Maycock (erocm123)
- *  Date: 2019-03-29
+ *  Date: 2019-09-08
  *
  */
  
 import groovy.json.JsonSlurper
 
 metadata {
-	definition (name: "Sonoff S20 - Tasmota", namespace: "erocm123", author: "Eric Maycock", vid:"generic-switch") {
+	definition (name: "Sonoff TH - Tasmota", namespace: "erocm123", author: "Eric Maycock", vid:"generic-switch") {
         capability "Actuator"
 		capability "Switch"
 		capability "Refresh"
 		capability "Sensor"
         capability "Configuration"
         capability "Health Check"
+        capability "Temperature Measurement"
+		capability "Relative Humidity Measurement"
         
         attribute   "amperage", "number"
         attribute   "needUpdate", "string"
@@ -41,9 +43,9 @@ metadata {
     
     preferences {
         input description: "Once you change values on this page, the corner of the \"configuration\" icon will change orange until all configuration parameters are updated.", title: "Settings", displayDuringSetup: false, type: "paragraph", element: "paragraph"
-        input(name: "override", type: "bool", title: "Override IP", description: "Override the automatically discovered IP address?", displayDuringSetup: true, required: false)
-        input(name: "ipAddress", type: "string", title: "IP Address", description: "IP Address of Sonoff", displayDuringSetup: true, required: false)
-		input(name: "port", type: "number", title: "Port", description: "Port", displayDuringSetup: true, required: false, defaultValue: 80)
+        //input(name: "override", type: "bool", title: "Override IP", description: "Override the automatically discovered IP address?", displayDuringSetup: true, required: false)
+        //input(name: "ipAddress", type: "string", title: "IP Address", description: "IP Address of Sonoff", displayDuringSetup: true, required: false)
+		//input(name: "port", type: "number", title: "Port", description: "Port", displayDuringSetup: true, required: false, defaultValue: 80)
 		generate_preferences(configuration_model())
 	}
 
@@ -56,6 +58,20 @@ metadata {
 				attributeState "turningOff", label:'${name}', action:"switch.on", backgroundColor:"#ffffff", icon: "st.switches.switch.on", nextState:"turningOn"
 			}
         }
+        valueTile("temperature","device.temperature", inactiveLabel: false, width: 2, height: 2) {
+            	state "temperature",label:'${currentValue}°', backgroundColors:[
+                    [value: 31, color: "#153591"],
+                    [value: 44, color: "#1e9cbb"],
+                    [value: 59, color: "#90d2a7"],
+				    [value: 74, color: "#44b621"],
+				    [value: 84, color: "#f1d801"],
+				    [value: 95, color: "#d04e00"],
+				    [value: 96, color: "#bc2323"]
+			    ]
+		}
+		valueTile("humidity","device.humidity", inactiveLabel: false, width: 2, height: 2) {
+           	state "humidity",label:'RH ${currentValue} %'
+		}
 		standardTile("refresh", "device.switch", inactiveLabel: false, decoration: "flat", width: 2, height: 2) {
 			state "default", label:"", action:"refresh.refresh", icon:"st.secondary.refresh"
 		}
@@ -75,7 +91,7 @@ metadata {
     }
 
 	main(["switch"])
-	details(["switch", 
+	details(["switch", "temperature", "humidity",
              "refresh","configure","reboot",
              "ip", "uptime"])
 }
@@ -139,7 +155,30 @@ def parse(description) {
     def result = slurper.parseText(body)
     
     //log.debug "result: ${result}"
-    
+        
+    if (result.containsKey("StatusSNS")) {
+        def StatusSNS = result.StatusSNS
+        if (StatusSNS.containsKey("DS18B20")) {
+            if (StatusSNS.DS18B20.containsKey("Temperature")) {
+                log.debug "Temperature: ${getAdjustedTemp(state.realTemperature? state.realTemperature:0)}"
+                state.realTemperature = convertTemperatureIfNeeded(StatusSNS.DS18B20.Temperature.toFloat(), StatusSNS.TempUnit, 1)
+                events << createEvent(name:"temperature", value:"${getAdjustedTemp(state.realTemperature)}", unit:"${location.temperatureScale}")
+            }
+        }
+        if (StatusSNS.containsKey("AM2301")) {
+            if (StatusSNS.AM2301.containsKey("Humidity"))
+                log.debug "Humidity: ${getAdjustedHumidity(state.realHumidity? state.realHumidity:0)}"
+                state.realHumidity = Math.round((StatusSNS.AM2301.Humidity as Double) * 100) / 100
+                events << createEvent(name: "humidity", value:"${getAdjustedHumidity(state.realHumidity)}", unit:"%")
+            if (StatusSNS.AM2301.containsKey("Temperature")) {
+                log.debug "Temperature: ${getAdjustedTemp(state.realTemperature? state.realTemperature:0)}"
+                state.realTemperature = convertTemperatureIfNeeded(StatusSNS.AM2301.Temperature.toFloat(), StatusSNS.TempUnit, 1)
+                events << createEvent(name:"temperature", value:"${getAdjustedTemp(state.realTemperature)}", unit:"${location.temperatureScale}")
+            }
+        }
+    }
+
+    if (result.containsKey("StatusSTS")) result = result.StatusSTS
 
     if (result.containsKey("POWER")) {
         log.debug "POWER: $result.POWER"
@@ -204,7 +243,7 @@ def parse(description) {
         //log.debug "Response is not JSON: $body"
     }
     }
-    
+
     if (!device.currentValue("ip") || (device.currentValue("ip") != getDataValue("ip"))) events << createEvent(name: 'ip', value: getDataValue("ip"))
     
     return events
@@ -231,6 +270,28 @@ def parseDescriptionAsMap(description) {
         if (nameAndValue.length == 2) map += [(nameAndValue[0].trim()):nameAndValue[1].trim()]
         else map += [(nameAndValue[0].trim()):""]
 	}
+}
+
+private getAdjustedTemp(value) {
+    value = Math.round((value as Double) * 100) / 100
+
+	if (tempOffset) {
+	   return value =  value + Math.round(tempOffset * 100) /100
+	} else {
+       return value
+    }
+    
+}
+
+private getAdjustedHumidity(value) {
+    value = Math.round((value as Double) * 100) / 100
+
+	if (humidityOffset) {
+	   return value =  value + Math.round(humidityOffset * 100) /100
+	} else {
+       return value
+    }
+    
 }
 
 
@@ -480,6 +541,14 @@ def configuration_model()
 <Value type="password" byteSize="1" index="password" label="Password" min="" max="" value="" setting_type="preference" fw="">
 <Help>
 </Help>
+</Value>
+<Value type="list" byteSize="1" index="PowerOnState" label="Power On State" min="0" max="3" value="3" setting_type="lan" fw="">
+<Help>
+Default: Previous
+</Help>
+    <Item label="Off" value="0" />
+    <Item label="On" value="1" />
+    <Item label="Previous" value="3" />
 </Value>
 <Value type="list" index="logLevel" label="Debug Logging Level?" value="0" setting_type="preference" fw="">
 <Help>

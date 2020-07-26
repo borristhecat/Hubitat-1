@@ -10,30 +10,33 @@
  *  on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License
  *  for the specific language governing permissions and limitations under the License.
  *
- *  Sonoff S20 - Tasmota
+ *  Sonoff 3Ch - Tasmota
  *
  *  Author: Eric Maycock (erocm123)
- *  Date: 2019-03-29
+ *  Date: 2019-09-05
  *
  */
  
 import groovy.json.JsonSlurper
 
 metadata {
-	definition (name: "Sonoff S20 - Tasmota", namespace: "erocm123", author: "Eric Maycock", vid:"generic-switch") {
+	definition (name: "Sonoff 3Ch - Tasmota", namespace: "erocm123", author: "Eric Maycock", vid:"generic-switch") {
         capability "Actuator"
 		capability "Switch"
 		capability "Refresh"
 		capability "Sensor"
         capability "Configuration"
         capability "Health Check"
+        capability "Voltage Measurement"
+		capability "Power Meter"
+        capability "Energy Meter"
         
-        attribute   "amperage", "number"
-        attribute   "needUpdate", "string"
-		attribute   "uptime", "string"
+        attribute  "amperage", "number"
+        attribute  "needUpdate", "string"
+        attribute   "uptime", "string"
         attribute   "ip", "string"
         
-        command "reboot"
+        command    "reboot"
 	}
 
 	simulator {
@@ -41,9 +44,6 @@ metadata {
     
     preferences {
         input description: "Once you change values on this page, the corner of the \"configuration\" icon will change orange until all configuration parameters are updated.", title: "Settings", displayDuringSetup: false, type: "paragraph", element: "paragraph"
-        input(name: "override", type: "bool", title: "Override IP", description: "Override the automatically discovered IP address?", displayDuringSetup: true, required: false)
-        input(name: "ipAddress", type: "string", title: "IP Address", description: "IP Address of Sonoff", displayDuringSetup: true, required: false)
-		input(name: "port", type: "number", title: "Port", description: "Port", displayDuringSetup: true, required: false, defaultValue: 80)
 		generate_preferences(configuration_model())
 	}
 
@@ -95,11 +95,23 @@ def configure() {
 def updated()
 {
     logging("updated()", 1)
+    if (!childDevices) {
+		createChildDevices()
+	}
+	else if (device.label != state.oldLabel) {
+		childDevices.each {
+            if (it.label == "${state.oldLabel} (R${channelNumber(it.deviceNetworkId)})") {
+			    def newLabel = "${device.displayName} (R${channelNumber(it.deviceNetworkId)})"
+			    it.setLabel(newLabel)
+            }
+		}
+		state.oldLabel = device.label
+	}
     def cmds = [] 
     cmds = update_needed_settings()
     sendEvent(name: "checkInterval", value: 2 * 15 * 60 + 2 * 60, displayed: false, data: [protocol: "lan", hubHardwareId: device.hub.hardwareID])
     sendEvent(name:"needUpdate", value: device.currentValue("needUpdate"), displayed:false, isStateChange: true)
-    if (cmds != []) response(cmds)
+    if (cmds != []) cmds
 }
 
 private def logging(message, level) {
@@ -125,7 +137,7 @@ def parse(description) {
 
     if (!state.mac || state.mac != descMap["mac"]) {
 		log.debug "Mac address of device found ${descMap["mac"]}"
-		state.mac = descMap["mac"]
+        state.mac = descMap["mac"]
 	}
     
     if (state.mac != null && state.dni != state.mac) state.dni = setDeviceNetworkId(state.mac)
@@ -140,10 +152,53 @@ def parse(description) {
     
     //log.debug "result: ${result}"
     
+    if (result.containsKey("StatusSTS")) result = result.StatusSTS
+        
+    if (result.containsKey("ENERGY")) {
+        if (result.ENERGY.containsKey("Power"))
+            events << createEvent(name: "power", value: result.ENERGY.Power, unit: "W")
+        if (result.ENERGY.containsKey("Total"))
+            events << createEvent(name: "energy", value: result.ENERGY.Total, unit: "KwH")
+        if (result.ENERGY.containsKey("Current"))
+            events << createEvent(name: "amperage", value: result.ENERGY.Current, unit: "A")
+        if (result.ENERGY.containsKey("Voltage"))
+            events << createEvent(name: "voltage", value: result.ENERGY.Voltage, unit: "V")
+    }
+    
+    if (result.containsKey("POWER1") || result.containsKey("POWER2") || result.containsKey("POWER3")) {
+    if (result.containsKey("POWER1")) {
+        log.debug "POWER1: $result.POWER1"
+        def childDevice = childDevices.find{it.deviceNetworkId == "$device.deviceNetworkId-ep1"}
+        if (childDevice) {         
+            childDevice.sendEvent(name: "switch", value: result.POWER1.toLowerCase())
+        }
+    }
+    if (result.containsKey("POWER2")) {
+        log.debug "POWER2: $result.POWER2"
+        def childDevice = childDevices.find{it.deviceNetworkId == "$device.deviceNetworkId-ep2"}
+        if (childDevice) {         
+            childDevice.sendEvent(name: "switch", value: result.POWER2.toLowerCase())
+        }
+    }
+    if (result.containsKey("POWER3")) {
+        log.debug "POWER3: $result.POWER3"
+        def childDevice = childDevices.find{it.deviceNetworkId == "$device.deviceNetworkId-ep3"}
+        if (childDevice) {         
+            childDevice.sendEvent(name: "switch", value: result.POWER3.toLowerCase())
+        }
+    }
 
-    if (result.containsKey("POWER")) {
-        log.debug "POWER: $result.POWER"
-        events << createEvent(name: "switch", value: result.POWER.toLowerCase())
+    def allOff = true
+    childDevices.each {
+        childDevice ->
+        if (childDevice.currentState("switch").value != "off") allOff = false
+    }
+
+    if (allOff) {
+        events << createEvent([name: "switch", value: "off"])
+    } else {
+        events << createEvent([name: "switch", value: "on"])
+    }
     }
     if (result.containsKey("LoadAvg")) {
         log.debug "LoadAvg: $result.LoadAvg"
@@ -195,10 +250,31 @@ def parse(description) {
     if (result.containsKey("SetOption81")) {
         log.debug "SetOption81: $result.SetOption81"
     }
-
     if (result.containsKey("Uptime")) {
         log.debug "Uptime: $result.Uptime"
         events << createEvent(name: 'uptime', value: result.Uptime, displayed: false)
+    }
+    if (result.containsKey("LedPower")) {
+        log.debug "LedPower: $result.LedPower"
+        processSetting("LedPower", result.LedPower == "ON"? 1 : 0)
+    }
+    if (result.containsKey("LedState")) {
+        log.debug "LedState: $result.LedState"
+        processSetting("LedState", result.LedState)
+    }
+    if (result.containsKey("HubitatHost")) {
+        log.debug "HubitatHost: $result.HubitatHost"
+    }
+    if (result.containsKey("HubitatPort")) {
+        log.debug "HubitatPort: $result.HubitatPort"
+    }
+    if (result.containsKey("PowerOnState")) {
+        log.debug "PowerOnState: $result.PowerOnState"
+        processSetting("PowerOnState", result.PowerOnState)
+    }
+    if (result.containsKey("SetOption81")) {
+        log.debug "SetOption81: $result.SetOption81"
+        processSetting("SetOption81", result.SetOption81 == "ON"? 1 : 0)
     }
     } else {
         //log.debug "Response is not JSON: $body"
@@ -208,6 +284,24 @@ def parse(description) {
     if (!device.currentValue("ip") || (device.currentValue("ip") != getDataValue("ip"))) events << createEvent(name: 'ip', value: getDataValue("ip"))
     
     return events
+}
+
+def processSetting(name, value){
+    def currentProperties = state.currentProperties ?: [:]
+    currentProperties."${name}" = "${value}"
+    
+    if (state.settings?."${name}" != null)
+    {
+        if (state.settings."${name}".toString() == "${value}")
+        {
+            sendEvent(name:"needUpdate", value:"NO", displayed:false, isStateChange: true)
+        }
+        else
+        {
+            sendEvent(name:"needUpdate", value:"YES", displayed:false, isStateChange: true)
+        }
+    }
+    state.currentProperties = currentProperties
 }
 
 def getCommandString(command, value) {
@@ -237,14 +331,18 @@ def parseDescriptionAsMap(description) {
 def on() {
 	log.debug "on()"
     def cmds = []
-    cmds << getAction(getCommandString("Power", "On"))
+    cmds << getAction(getCommandString("Power1", "On"))
+    cmds << getAction(getCommandString("Power2", "On"))
+    cmds << getAction(getCommandString("Power3", "On"))
     return cmds
 }
 
 def off() {
     log.debug "off()"
 	def cmds = []
-    cmds << getAction(getCommandString("Power", "Off"))
+    cmds << getAction(getCommandString("Power1", "Off"))
+    cmds << getAction(getCommandString("Power2", "Off"))
+    cmds << getAction(getCommandString("Power3", "Off"))
     return cmds
 }
 
@@ -253,6 +351,27 @@ def refresh() {
     def cmds = []
     cmds << getAction(getCommandString("Status", "0"))
     return cmds
+}
+
+void childOn(String dni) {
+    log.debug "childOn($dni)"
+    def cmds = []
+    cmds << getAction(getCommandString("Power${channelNumber(dni)}", "On"))
+	sendHubCommand(cmds)
+}
+
+void childOff(String dni) {
+    log.debug "childOff($dni)"
+	def cmds = []
+    cmds << getAction(getCommandString("Power${channelNumber(dni)}", "Off"))
+	sendHubCommand(cmds)
+}
+
+void childRefresh(String dni) {
+    log.debug "childRefresh($dni)"
+	def cmds = []
+    cmds << getAction(getCommandString("Power${channelNumber(dni)}", ""))
+    sendHubCommand(cmds)
 }
 
 def ping() {
@@ -327,18 +446,11 @@ private String convertPortToHex(port) {
     return hexport
 }
 
-private encodeCredentials(username, password){
-	def userpassascii = "${username}:${password}"
-    def userpass = "Basic " + userpassascii.bytes.encodeBase64().toString()
-    return userpass
-}
-
-private getHeader(userpass = null){
+private getHeader(){
     def headers = [:]
+    //log.debug getHostAddress()
     headers.put("Host", getHostAddress())
     headers.put("Content-Type", "application/x-www-form-urlencoded")
-    if (userpass != null)
-       headers.put("Authorization", userpass)
     return headers
 }
 
@@ -357,6 +469,40 @@ def sync(ip, port) {
     if (port && port != existingPort) {
         updateDataValue("port", port)
     }
+}
+
+private channelNumber(String dni) {
+	dni.split("-ep")[-1] as Integer
+}
+
+private void createChildDevices() {
+	state.oldLabel = device.label
+    if ( device.deviceNetworkId =~ /^([0-9A-F]{2}){6}$/) {
+     try {
+        for (i in 1..3) {
+	       addChildDevice("Switch Child Device", "${device.deviceNetworkId}-ep${i}", 
+		      [completedSetup: true, label: "${device.displayName} (R${i})",
+		      isComponent: false, componentName: "ep$i", componentLabel: "Relay $i"])
+        }
+    } catch (e) {
+        state.alertMessage = "Child device creation failed. Please make sure that the \"Switch Child Device\" is installed and published."
+	    runIn(2, "sendAlert")
+    }
+    } else {
+        state.alertMessage = "Device has not yet been fully configured. Hit the configure button device tile and try again."
+        runIn(2, "sendAlert")
+    
+    }
+}
+
+private sendAlert() {
+   sendEvent(
+      descriptionText: state.alertMessage,
+	  eventType: "ALERT",
+	  name: "childDeviceCreation",
+	  value: "failed",
+	  displayed: true,
+   )
 }
 
 
@@ -408,34 +554,10 @@ def generate_preferences(configuration_model)
     }
 }
 
- /*  Code has elements from other community source @CyrilPeponnet (Z-Wave Parameter Sync). */
-
-def update_current_properties(cmd)
-{
-    def currentProperties = state.currentProperties ?: [:]
-    currentProperties."${cmd.name}" = cmd.value
-
-    if (state.settings?."${cmd.name}" != null)
-    {
-        if (state.settings."${cmd.name}".toString() == cmd.value)
-        {
-            sendEvent(name:"needUpdate", value:"NO", displayed:false, isStateChange: true)
-        }
-        else
-        {
-            sendEvent(name:"needUpdate", value:"YES", displayed:false, isStateChange: true)
-        }
-    }
-    state.currentProperties = currentProperties
-}
-
-
 def update_needed_settings()
 {
     def cmds = []
     def currentProperties = state.currentProperties ?: [:]
-    
-    state.settings = settings
      
     def configuration = new XmlSlurper().parseText(configuration_model())
     def isUpdateNeeded = "NO"
@@ -453,18 +575,18 @@ def update_needed_settings()
             {
                if (it.@setonly == "true"){
                   logging("Setting ${it.@index} will be updated to ${it.@value}", 2)
-                  cmds << getAction("/configSet?name=${it.@index}&value=${it.@value}")
+                  cmds << getAction(getCommandString("${it.@index}", "${it.@value}"))
                } else {
                   isUpdateNeeded = "YES"
                   logging("Current value of setting ${it.@index} is unknown", 2)
-                  cmds << getAction("/configGet?name=${it.@index}")
+                  cmds << getAction(getCommandString("${it.@index}", ""))
                }
             }
-            else if ((settings."${it.@index}" != null || it.@hidden == "true") && currentProperties."${it.@index}" != (settings."${it.@index}" != null? settings."${it.@index}".toString() : "${it.@value}"))
+            else if ((settings."${it.@index}" != null || it.@hidden == "true") && currentProperties."${it.@index}" != (settings."${it.@index}"? settings."${it.@index}".toString() : "${it.@value}"))
             { 
                 isUpdateNeeded = "YES"
                 logging("Setting ${it.@index} will be updated to ${settings."${it.@index}"}", 2)
-                cmds << getAction("/configSet?name=${it.@index}&value=${settings."${it.@index}"}")
+                cmds << getAction(getCommandString("${it.@index}", "${settings."${it.@index}"}"))
             } 
         }
     }
@@ -481,7 +603,15 @@ def configuration_model()
 <Help>
 </Help>
 </Value>
-<Value type="list" index="logLevel" label="Debug Logging Level?" value="0" setting_type="preference" fw="">
+<Value type="list" byteSize="1" index="PowerOnState" label="Power On State" min="0" max="3" value="3" setting_type="lan" fw="">
+<Help>
+Default: Previous
+</Help>
+    <Item label="Off" value="0" />
+    <Item label="On" value="1" />
+    <Item label="Previous" value="3" />
+</Value>
+<Value type="list" index="logLevel" label="Debug Logging Level?" value="1" setting_type="preference" fw="">
 <Help>
 </Help>
     <Item label="None" value="0" />
