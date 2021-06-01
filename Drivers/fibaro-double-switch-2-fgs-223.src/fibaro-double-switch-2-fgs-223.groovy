@@ -28,7 +28,6 @@ definition (name: "Fibaro Double Switch 2 FGS-223", namespace: "erocm123", autho
     capability "Polling"
     capability "Configuration"
     capability "Refresh"
-    //capability "Zw Multichannel"
     capability "Energy Meter"
     capability "Power Meter"
     capability "Health Check"
@@ -98,7 +97,7 @@ private getCommandClassVersions() {
      0x25: 1, // Switch Binary
      0x70: 2, // Configuration
      0x98: 1, // Security
-     0x60: 3, // Multi Channel
+     0x60: 4, // Multi Channel
      0x8E: 2, // Multi Channel Association
      0x26: 1, // Switch Multilevel
      0x87: 1, // Indicator
@@ -108,11 +107,11 @@ private getCommandClassVersions() {
      0x85: 2, // Association
      0x86: 1, // Version
      0x9B: 1, // Association Command Configuration
-	 0x90: 1, // Energy Production
-	 0x73: 1, // Powerlevel
-	 0x30: 1, // Sensor Binary
-	 0x28: 1, // Switch Toggle Binary
-	 0x2B: 1, // Scene Activation
+     0x90: 1, // Energy Production
+     0x73: 1, // Powerlevel
+     0x30: 1, // Sensor Binary
+     0x28: 1, // Switch Toggle Binary
+     0x2B: 1, // Scene Activation
      0x75: 2  // Protection
     ]
 }
@@ -239,9 +238,9 @@ def zwaveEvent(hubitat.zwave.commands.meterv3.MeterReport cmd, ep=null) {
     }
 }
 
-def zwaveEvent(hubitat.zwave.commands.multichannelv3.MultiChannelCapabilityReport cmd) 
+def zwaveEvent(hubitat.zwave.commands.multichannelv4.MultiChannelCapabilityReport cmd) 
 {
-    //log.debug "multichannelv3.MultiChannelCapabilityReport $cmd"
+    //log.debug "multichannelv4.MultiChannelCapabilityReport $cmd"
     if (cmd.endPoint == 2 ) {
         def currstate = device.currentState("switch2").getValue()
         if (currstate == "on")
@@ -258,7 +257,7 @@ def zwaveEvent(hubitat.zwave.commands.multichannelv3.MultiChannelCapabilityRepor
     }
 }
 
-def zwaveEvent(hubitat.zwave.commands.multichannelv3.MultiChannelCmdEncap cmd) {
+def zwaveEvent(hubitat.zwave.commands.multichannelv4.MultiChannelCmdEncap cmd) {
    //logging("MultiChannelCmdEncap ${cmd}")
    def encapsulatedCommand = cmd.encapsulatedCommand(commandClassVersions)
    if (encapsulatedCommand) {
@@ -275,7 +274,7 @@ def zwaveEvent(hubitat.zwave.commands.associationv2.AssociationReport cmd) {
 def zwaveEvent(hubitat.zwave.commands.multichannelassociationv2.MultiChannelAssociationReport cmd) {
 	log.debug "MultiChannelAssociationReport $cmd"
     if (cmd.groupingIdentifier == 1) {
-        if ([0,zwaveHubNodeId,1] == cmd.nodeId) state."associationMC${cmd.groupingIdentifier}" = true
+        if ([0,zwaveHubNodeId,0] == cmd.nodeId) state."associationMC${cmd.groupingIdentifier}" = true
         else state."associationMC${cmd.groupingIdentifier}" = false
     }
 }
@@ -454,7 +453,7 @@ private commands(commands, delay=1000) {
 
 private encap(cmd, endpoint) {
 	if (endpoint) {
-		zwave.multiChannelV3.multiChannelCmdEncap(destinationEndPoint:endpoint).encapsulate(cmd)
+		zwave.multiChannelV4.multiChannelCmdEncap(destinationEndPoint:endpoint).encapsulate(cmd)
 	} else {
 		cmd
 	}
@@ -550,7 +549,7 @@ def update_needed_settings()
        logging("Adding MultiChannel association group 1")
        cmds << zwave.associationV2.associationRemove(groupingIdentifier: 1, nodeId: [])
 	   //cmds << zwave.associationV2.associationGet(groupingIdentifier: 1)
-       cmds << zwave.multiChannelAssociationV2.multiChannelAssociationSet(groupingIdentifier: 1, nodeId: [0,zwaveHubNodeId,1])
+       cmds << zwave.multiChannelAssociationV2.multiChannelAssociationSet(groupingIdentifier: 1, nodeId: [0,zwaveHubNodeId,0])
        cmds << zwave.multiChannelAssociationV2.multiChannelAssociationGet(groupingIdentifier: 1)
     }
     if(state.association2){
